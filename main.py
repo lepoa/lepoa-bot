@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import requests
 from datetime import datetime, date
 from playwright.async_api import async_playwright
@@ -15,110 +16,131 @@ ZAPI_GROUP_ID = os.environ.get("ZAPI_GROUP_ID", "")
 
 LOJA_NOME = "Le Poa Loja 01 - Matriz"
 
+# Colunas do XLS: Loja | Data | QtdeVendas | QtdeItens | PA | PU | TicketMedio | Meta | ValorVendido | VendasAcumuladas | ...
+COL_DATA       = 1
+COL_QTD_VENDAS = 2
+COL_QTD_ITENS  = 3
+COL_PA         = 4
+COL_TICKET     = 6
+COL_VALOR      = 8
+COL_ACUMULADO  = 9
 
-async def buscar_dados_datasystem():
+
+async def baixar_xls():
+    """Faz login no DataSystem, gera e baixa o XLS do relatório."""
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context()
         page = await context.new_page()
 
-        print("Acessando login...")
+        print("Login...")
         await page.goto("https://lepoa11672.useserver.com.br/RETAGUARDA/", wait_until="networkidle", timeout=30000)
 
         try:
-            # Preenche usuario
             await page.wait_for_selector("input[type='text']", timeout=8000)
             await page.fill("input[type='text']", DATASYSTEM_USER)
-            # Preenche senha
             await page.fill("input[type='password']", DATASYSTEM_PASS)
-            # Seleciona a loja no dropdown (terceiro campo)
-            try:
-                select = await page.query_selector("select")
-                if select:
-                    await page.select_option("select", label="LE POA LOJA 01 MATRIZ")
-                    print("Loja selecionada!")
-            except Exception as e:
-                print(f"Dropdown loja: {e}")
-            # Clica em Entrar
+            select = await page.query_selector("select")
+            if select:
+                await page.select_option("select", label="LE POA LOJA 01 MATRIZ")
             await page.click("text=Entrar")
             await page.wait_for_load_state("networkidle")
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(2000)
             print("Login OK!")
         except Exception as e:
-            print(f"Erro login: {e}")
+            print(f"Login erro: {e}")
 
-        # Vai para o relatorio
-        print("Navegando para relatorio...")
+        print("Abrindo relatorio...")
         await page.goto(DATASYSTEM_URL, wait_until="networkidle", timeout=30000)
-        await page.wait_for_timeout(3000)
+        await page.wait_for_timeout(2000)
 
-        # Clica confirmar
+        # Clica em Confirmar
+        await page.click("text=Confirmar")
+        await page.wait_for_load_state("networkidle")
+        await page.wait_for_timeout(4000)
+
+        # Clica no botão de impressão (ícone de impressora)
+        print("Abrindo dialogo de exportacao...")
         try:
-            await page.click("text=Confirmar")
-            await page.wait_for_load_state("networkidle")
-            await page.wait_for_timeout(5000)
-            print("Relatorio carregado!")
-        except Exception as e:
-            print(f"Confirmar: {e}")
+            await page.click("button.btn-print, .btn-imprimir, input[title*='print'], button[title*='print'], .fa-print, [onclick*='print'], [onclick*='Print']")
+        except:
+            # Tenta pelo ícone de impressora na tabela
+            await page.click("img[src*='print'], .glyphicon-print, button:has-text('Imprimir')")
+        await page.wait_for_timeout(2000)
 
-        # Debug: salva HTML para ver estrutura
-        html = await page.content()
-        print(f"HTML length: {len(html)}")
-
-        hoje = date.today().strftime("%d/%m/%Y")
-        print(f"Buscando: {hoje}")
-
-        indicadores = {
-            "Valor Vendido": "-",
-            "Quantidade de Vendas": "-",
-            "Quantidade de Itens": "-",
-            "PA": "-",
-            "Ticket Medio": "-",
-            "Vendas Acumuladas": "-",
-            "Projecao": "-",
-            "Meta Corrigida": "-",
-        }
-
+        # Seleciona XLS e Detalhado
         try:
-            rows = await page.query_selector_all("tr")
-            print(f"Total rows: {len(rows)}")
-            for row in rows:
-                cells = await row.query_selector_all("td")
-                if not cells:
-                    continue
-                texts = [await c.inner_text() for c in cells]
-                # Imprime todas as linhas para debug
-                if texts and any(c.strip() for c in texts):
-                    print(f"ROW: {texts}")
-
-                if texts and hoje in texts[0]:
-                    print(f"HOJE encontrado: {texts}")
-                    if len(texts) >= 9:
-                        indicadores["Quantidade de Vendas"] = texts[1].strip()
-                        indicadores["Quantidade de Itens"]  = texts[2].strip()
-                        indicadores["PA"]                   = texts[3].strip()
-                        indicadores["Ticket Medio"]         = texts[5].strip()
-                        indicadores["Valor Vendido"]        = texts[7].strip()
-                        indicadores["Vendas Acumuladas"]    = texts[8].strip()
-
-                if texts and texts[0].strip() == "TOTAL" and len(texts) >= 14:
-                    t = texts[11].strip()
-                    m = texts[13].strip()
-                    indicadores["Projecao"]       = t if t not in ["0,00","0","","–","-"] else "-"
-                    indicadores["Meta Corrigida"] = m if m not in ["0,00","0","","–","-"] else "-"
-
+            await page.click("input[value='.XLS'], label:has-text('XLS'), text=.XLS")
+            await page.click("input[value='Detalhado'], label:has-text('Detalhado'), text=Detalhado")
         except Exception as e:
-            print(f"Erro tabela: {e}")
+            print(f"Selecao opcoes: {e}")
+
+        # Faz download interceptando a resposta
+        print("Baixando XLS...")
+        async with page.expect_download() as download_info:
+            try:
+                await page.click("text=Download")
+            except:
+                await page.click("button:has-text('Download'), a:has-text('Download')")
+
+        download = await download_info.value
+        xls_path = "/tmp/relatorio.xls"
+        await download.save_as(xls_path)
+        print(f"XLS salvo em {xls_path}")
 
         await browser.close()
-        return indicadores
+        return xls_path
+
+
+def parse_xls(xls_path):
+    """Lê o XLS (HTML disfarçado) e extrai os dados de hoje."""
+    hoje = date.today().strftime("%d/%m/%Y")
+    print(f"Buscando dados de: {hoje}")
+
+    indicadores = {
+        "Valor Vendido": "-",
+        "Quantidade de Vendas": "-",
+        "Quantidade de Itens": "-",
+        "PA": "-",
+        "Ticket Medio": "-",
+        "Vendas Acumuladas": "-",
+        "Projecao": "-",
+        "Meta Corrigida": "-",
+    }
+
+    try:
+        content = open(xls_path, 'rb').read()
+        text = content.decode('utf-16-le', errors='ignore')
+        trs = re.findall(r'<tr[^>]*>(.*?)</tr>', text, re.DOTALL)
+
+        for tr in trs:
+            tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
+            if not tds:
+                continue
+            cols = [re.sub(r'<[^>]+>', '', td).strip() for td in tds]
+
+            # Linha de hoje
+            if len(cols) > COL_ACUMULADO and cols[COL_DATA] == hoje:
+                print(f"Linha encontrada: {cols}")
+                indicadores["Quantidade de Vendas"] = cols[COL_QTD_VENDAS]
+                indicadores["Quantidade de Itens"]  = cols[COL_QTD_ITENS]
+                indicadores["PA"]                   = cols[COL_PA]
+                indicadores["Ticket Medio"]         = cols[COL_TICKET]
+                indicadores["Valor Vendido"]        = cols[COL_VALOR]
+                indicadores["Vendas Acumuladas"]    = cols[COL_ACUMULADO]
+                break
+
+    except Exception as e:
+        print(f"Erro parse: {e}")
+
+    return indicadores
 
 
 def montar_mensagem(ind):
     agora = datetime.now().strftime("%d/%m/%Y as %H:%M")
     def v(k): return ind.get(k) or "-"
     return (
-        f"Resumo de Vendas - {LOJA_NOME}\n"
+        f"*Resumo de Vendas - {LOJA_NOME}*\n"
         f"{agora}\n\n"
         f"Valor Vendido: R$ {v('Valor Vendido')}\n"
         f"Qtd. Vendas: {v('Quantidade de Vendas')}\n"
@@ -144,8 +166,9 @@ def enviar_whatsapp(mensagem):
 
 
 async def executar():
-    print(f"=== Iniciando {datetime.now().strftime('%d/%m/%Y %H:%M')} ===")
-    indicadores = await buscar_dados_datasystem()
+    print(f"=== {datetime.now().strftime('%d/%m/%Y %H:%M')} ===")
+    xls_path = await baixar_xls()
+    indicadores = parse_xls(xls_path)
     mensagem = montar_mensagem(indicadores)
     print("Mensagem:\n", mensagem)
     enviar_whatsapp(mensagem)
