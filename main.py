@@ -20,140 +20,86 @@ LOJA_NOME = "Le Poa Loja 01 - Matriz"
 COL_DATA=1; COL_QTD_VENDAS=2; COL_QTD_ITENS=3; COL_PA=4
 COL_TICKET=6; COL_VALOR=8; COL_ACUMULADO=9
 
+HEADERS_BROWSER = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Connection": "keep-alive",
+    "Upgrade-Insecure-Requests": "1",
+}
+
+
+def fazer_login_http():
+    """Tenta fazer login via requests HTTP e retorna a sessão autenticada."""
+    session = requests.Session()
+    session.headers.update(HEADERS_BROWSER)
+
+    # Testa varias URLs possiveis de login
+    urls_teste = [
+        DATASYSTEM_BASE + "/",
+        DATASYSTEM_BASE + "/Login",
+        DATASYSTEM_BASE + "/Account/Login",
+        DATASYSTEM_BASE + "/Home/Login",
+        DATASYSTEM_BASE + "/Usuario/Login",
+        "https://lepoa11672.useserver.com.br/",
+    ]
+
+    print("=== TESTE DE URLs ===", flush=True)
+    for url in urls_teste:
+        try:
+            r = session.get(url, timeout=10, allow_redirects=True)
+            print(f"  GET {url} -> {r.status_code} ({len(r.text)} chars)", flush=True)
+            if r.status_code == 200 and len(r.text) > 100:
+                print(f"  Conteudo: {r.text[:200]}", flush=True)
+                break
+        except Exception as e:
+            print(f"  GET {url} -> ERRO: {e}", flush=True)
+
+    # Tenta POST de login em varios endpoints
+    print("=== TESTE DE LOGIN POST ===", flush=True)
+    login_urls = [
+        DATASYSTEM_BASE + "/Login",
+        DATASYSTEM_BASE + "/Account/Login",
+        DATASYSTEM_BASE + "/Usuario/Autenticar",
+        DATASYSTEM_BASE + "/Home/Autenticar",
+        DATASYSTEM_BASE + "/api/login",
+        DATASYSTEM_BASE + "/api/auth",
+    ]
+
+    payloads = [
+        {"usuario": DATASYSTEM_USER, "senha": DATASYSTEM_PASS},
+        {"user": DATASYSTEM_USER, "password": DATASYSTEM_PASS},
+        {"login": DATASYSTEM_USER, "senha": DATASYSTEM_PASS},
+        {"Username": DATASYSTEM_USER, "Password": DATASYSTEM_PASS},
+        {"usuario": DATASYSTEM_USER, "senha": DATASYSTEM_PASS, "loja": "1"},
+    ]
+
+    for url in login_urls:
+        for payload in payloads[:2]:
+            try:
+                r = session.post(url, json=payload, timeout=10)
+                print(f"  POST {url} json={list(payload.keys())} -> {r.status_code}", flush=True)
+                if r.status_code in [200, 201, 302]:
+                    print(f"  Resposta: {r.text[:200]}", flush=True)
+            except Exception as e:
+                pass
+
+            try:
+                r = session.post(url, data=payload, timeout=10)
+                print(f"  POST {url} form={list(payload.keys())} -> {r.status_code}", flush=True)
+                if r.status_code in [200, 201, 302]:
+                    print(f"  Resposta: {r.text[:200]}", flush=True)
+            except Exception as e:
+                pass
+
+    return None
+
 
 async def baixar_xls():
-    async with async_playwright() as p:
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
-        )
-        # Contexto com user-agent real de Chrome Windows
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            extra_http_headers={
-                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Connection": "keep-alive",
-                "Upgrade-Insecure-Requests": "1",
-            }
-        )
-        page = await context.new_page()
-
-        print("Abrindo login...", flush=True)
-        response = await page.goto(DATASYSTEM_BASE + "/", wait_until="domcontentloaded", timeout=30000)
-        print(f"Status HTTP: {response.status}", flush=True)
-        await page.wait_for_timeout(3000)
-
-        html = await page.content()
-        print(f"HTML (400 chars): {html[:400]}", flush=True)
-
-        # Espera inputs aparecerem
-        try:
-            await page.wait_for_selector("input", timeout=15000)
-            print("Inputs encontrados!", flush=True)
-        except:
-            print("Nenhum input encontrado apos 15s", flush=True)
-
-        inputs = await page.query_selector_all("input")
-        print(f"Total inputs: {len(inputs)}", flush=True)
-        for inp in inputs:
-            t = await inp.get_attribute("type") or "text"
-            n = await inp.get_attribute("name") or ""
-            i = await inp.get_attribute("id") or ""
-            ph = await inp.get_attribute("placeholder") or ""
-            print(f"  input: type={t} name={n} id={i} placeholder={ph}", flush=True)
-
-        selects = await page.query_selector_all("select")
-        print(f"Total selects: {len(selects)}", flush=True)
-
-        # Preenche login
-        try:
-            user_inp = await page.query_selector("input:not([type='password']):not([type='hidden'])")
-            if user_inp:
-                await user_inp.fill(DATASYSTEM_USER)
-                print("Usuario OK", flush=True)
-
-            pass_inp = await page.query_selector("input[type='password']")
-            if pass_inp:
-                await pass_inp.fill(DATASYSTEM_PASS)
-                print("Senha OK", flush=True)
-
-            if selects:
-                options = await selects[0].query_selector_all("option")
-                for opt in options:
-                    txt = await opt.inner_text()
-                    val = await opt.get_attribute("value") or ""
-                    print(f"  opcao: '{txt}'", flush=True)
-                    if "MATRIZ" in txt.upper() or "01" in txt:
-                        await selects[0].select_option(value=val)
-                        print(f"Loja: {txt}", flush=True)
-                        break
-
-            await page.click("text=Entrar", timeout=5000)
-            await page.wait_for_load_state("networkidle")
-            await page.wait_for_timeout(3000)
-            print(f"Pos-login: {page.url}", flush=True)
-        except Exception as e:
-            print(f"Erro login: {e}", flush=True)
-
-        # Relatorio
-        await page.goto(DATASYSTEM_URL, wait_until="domcontentloaded", timeout=30000)
-        await page.wait_for_timeout(3000)
-        body = await page.inner_text("body")
-        print(f"Relatorio: {body[:200]}", flush=True)
-
-        if "401" in body or "Unauthorized" in body:
-            print("LOGIN FALHOU - verificar usuario/senha nas variaveis", flush=True)
-            await browser.close()
-            return None
-
-        # Confirmar
-        try:
-            await page.locator("text=Confirmar").click(timeout=15000)
-            await page.wait_for_load_state("networkidle")
-            await page.wait_for_timeout(5000)
-            print("Confirmado!", flush=True)
-        except Exception as e:
-            print(f"Erro confirmar: {e}", flush=True)
-            await browser.close()
-            return None
-
-        # Botao impressora
-        print("Procurando impressora...", flush=True)
-        els = await page.query_selector_all("[onclick]")
-        for el in els:
-            onclick = await el.get_attribute("onclick") or ""
-            if any(x in onclick.lower() for x in ["print","imprim","xls","export","relat"]):
-                print(f"  candidato: {onclick[:80]}", flush=True)
-
-        try:
-            await page.locator("[onclick*='print'], [onclick*='Print'], [onclick*='imprimir']").first.click(timeout=5000)
-            await page.wait_for_timeout(2000)
-            print("Impressora OK!", flush=True)
-        except Exception as e:
-            print(f"Impressora erro: {e}", flush=True)
-
-        # XLS + Detalhado + Download
-        try:
-            await page.locator("text=.XLS").click(timeout=3000)
-            await page.locator("text=Detalhado").click(timeout=3000)
-        except Exception as e:
-            print(f"Selecao: {e}", flush=True)
-
-        try:
-            async with page.expect_download(timeout=20000) as dl:
-                await page.locator("text=Download").click(timeout=5000)
-            download = await dl.value
-            xls_path = "/tmp/relatorio.xls"
-            await download.save_as(xls_path)
-            print("XLS baixado!", flush=True)
-            await browser.close()
-            return xls_path
-        except Exception as e:
-            print(f"Erro download: {e}", flush=True)
-            await browser.close()
-            return None
+    # Primeiro tenta descobrir o endpoint de login
+    fazer_login_http()
+    return None
 
 
 def parse_xls(xls_path):
@@ -176,7 +122,6 @@ def parse_xls(xls_path):
                 continue
             cols = [re.sub(r'<[^>]+>', '', td).strip() for td in tds]
             if len(cols) > COL_ACUMULADO and cols[COL_DATA] == hoje:
-                print(f"Linha hoje: {cols}", flush=True)
                 indicadores["Quantidade de Vendas"] = cols[COL_QTD_VENDAS]
                 indicadores["Quantidade de Itens"]  = cols[COL_QTD_ITENS]
                 indicadores["PA"]                   = cols[COL_PA]
@@ -223,7 +168,8 @@ async def executar():
     ind = parse_xls(xls_path)
     msg = montar_mensagem(ind)
     print(msg, flush=True)
-    enviar_whatsapp(msg)
+    # Nao envia ainda, so debug
+    # enviar_whatsapp(msg)
 
 if __name__ == "__main__":
     asyncio.run(executar())
