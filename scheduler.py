@@ -10,7 +10,12 @@ def job():
 schedule.every().day.at("22:00").do(job)
 
 print("⏰ Agendador iniciado! Enviará o resumo todo dia às 19:00 (horário de Brasília).")
-print("   Aguardando próximo horário agendado...")
+print("🧪 Rodando teste imediato na inicialização...")
+
+# Roda imediatamente para testar
+job()
+
+print("✅ Teste concluído! Aguardando próximo horário agendado (19h)...")
 
 while True:
     schedule.run_pending()
