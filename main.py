@@ -1,7 +1,7 @@
 import asyncio
 import os
 import requests
-from datetime import datetime
+from datetime import datetime, date
 from playwright.async_api import async_playwright
 
 # ─── CONFIGURAÇÕES ────────────────────────────────────────────
@@ -12,121 +12,124 @@ DATASYSTEM_PASS = os.environ.get("DS_PASS", "")
 ZAPI_INSTANCE = os.environ.get("ZAPI_INSTANCE", "3EFAD2909069028ADC8E6237BF5854B6")
 ZAPI_TOKEN    = os.environ.get("ZAPI_TOKEN",    "3543270E8FE1C9AEA4383932")
 ZAPI_CLIENT   = os.environ.get("ZAPI_CLIENT",   "F26521e4d25334eb0846c707873e47080S")
-ZAPI_GROUP_ID = os.environ.get("ZAPI_GROUP_ID", "")   # será preenchido depois
+ZAPI_GROUP_ID = os.environ.get("ZAPI_GROUP_ID", "")
 
 LOJA_NOME = "Le Poá Loja 01 - Matriz"
 # ──────────────────────────────────────────────────────────────
 
 
 async def buscar_dados_datasystem():
-    """Acessa o DataSystem e extrai os dados do relatório de tendência."""
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context()
         page = await context.new_page()
 
-        print("🔐 Acessando DataSystem...")
-        await page.goto(DATASYSTEM_URL, wait_until="networkidle", timeout=30000)
+        print("Acessando DataSystem...")
+        await page.goto("https://lepoa11672.useserver.com.br/RETAGUARDA/", wait_until="networkidle", timeout=30000)
 
-        # Faz login se necessário
         try:
-            await page.wait_for_selector("input[type='text'], input[name='login'], input[id*='user']", timeout=5000)
+            await page.wait_for_selector("input[type='text']", timeout=8000)
             await page.fill("input[type='text']", DATASYSTEM_USER)
             await page.fill("input[type='password']", DATASYSTEM_PASS)
             await page.keyboard.press("Enter")
             await page.wait_for_load_state("networkidle")
-            print("✅ Login realizado!")
-        except:
-            print("ℹ️ Login não necessário ou já autenticado.")
+            await page.wait_for_timeout(2000)
+            print("Login realizado!")
+        except Exception as e:
+            print(f"Login: {e}")
 
-        # Aguarda o relatório carregar
-        await page.wait_for_timeout(4000)
+        print("Acessando relatorio de Tendencia...")
+        await page.goto(DATASYSTEM_URL, wait_until="networkidle", timeout=30000)
+        await page.wait_for_timeout(2000)
 
-        # Captura o texto da página toda
-        conteudo = await page.inner_text("body")
-        print("📄 Conteúdo capturado!")
+        try:
+            await page.click("text=Confirmar")
+            await page.wait_for_load_state("networkidle")
+            await page.wait_for_timeout(4000)
+            print("Relatorio gerado!")
+        except Exception as e:
+            print(f"Confirmar: {e}")
+
+        hoje = date.today().strftime("%d/%m/%Y")
+        print(f"Buscando dados de hoje: {hoje}")
+
+        indicadores = {
+            "Valor Vendido": "-",
+            "Quantidade de Vendas": "-",
+            "Quantidade de Itens": "-",
+            "PA": "-",
+            "Ticket Medio": "-",
+            "Vendas Acumuladas": "-",
+            "Projecao": "-",
+            "Meta Corrigida": "-",
+        }
+
+        try:
+            rows = await page.query_selector_all("tr")
+            for row in rows:
+                cells = await row.query_selector_all("td")
+                if not cells:
+                    continue
+                texts = [await c.inner_text() for c in cells]
+
+                if texts and hoje in texts[0]:
+                    print(f"Linha de hoje: {texts}")
+                    if len(texts) >= 9:
+                        indicadores["Quantidade de Vendas"] = texts[1].strip()
+                        indicadores["Quantidade de Itens"]  = texts[2].strip()
+                        indicadores["PA"]                   = texts[3].strip()
+                        indicadores["Ticket Medio"]         = texts[5].strip()
+                        indicadores["Valor Vendido"]        = texts[7].strip()
+                        indicadores["Vendas Acumuladas"]    = texts[8].strip()
+
+                if texts and texts[0].strip() == "TOTAL" and len(texts) >= 14:
+                    t = texts[11].strip()
+                    m = texts[13].strip()
+                    indicadores["Projecao"]      = t if t not in ["0,00","0","","–"] else "-"
+                    indicadores["Meta Corrigida"] = m if m not in ["0,00","0","","–"] else "-"
+
+        except Exception as e:
+            print(f"Erro tabela: {e}")
 
         await browser.close()
-        return conteudo
+        return indicadores
 
 
-def extrair_indicadores(texto):
-    """Extrai os indicadores do texto capturado da página."""
-    import re
-
-    indicadores = {
-        "Valor Vendido": None,
-        "Quantidade de Vendas": None,
-        "Quantidade de Itens": None,
-        "PA": None,
-        "Ticket Médio": None,
-        "Vendas Acumuladas": None,
-        "Projeção": None,
-        "Meta Corrigida": None,
-    }
-
-    linhas = texto.split("\n")
-    for i, linha in enumerate(linhas):
-        linha_lower = linha.lower()
-        for chave in indicadores:
-            if chave.lower() in linha_lower and indicadores[chave] is None:
-                # Tenta pegar o valor na mesma linha ou na próxima
-                valor = re.search(r"R?\$?\s?[\d.,]+", linha)
-                if not valor and i + 1 < len(linhas):
-                    valor = re.search(r"R?\$?\s?[\d.,]+", linhas[i + 1])
-                if valor:
-                    indicadores[chave] = valor.group().strip()
-
-    return indicadores
-
-
-def montar_mensagem(indicadores):
-    """Monta a mensagem formatada para o WhatsApp."""
-    agora = datetime.now().strftime("%d/%m/%Y às %H:%M")
-
-    def val(k):
-        return indicadores.get(k) or "–"
-
-    msg = f"""📊 *Resumo de Vendas — {LOJA_NOME}*
-🗓️ {agora}
-
-💰 *Valor Vendido:* {val("Valor Vendido")}
-🛒 *Qtd. Vendas:* {val("Quantidade de Vendas")}
-📦 *Qtd. Itens:* {val("Quantidade de Itens")}
-👟 *PA:* {val("PA")}
-🎯 *Ticket Médio:* {val("Ticket Médio")}
-📈 *Vendas Acumuladas:* {val("Vendas Acumuladas")}
-🔮 *Projeção:* {val("Projeção")}
-🏆 *Meta Corrigida:* {val("Meta Corrigida")}
-
-_Enviado automaticamente pelo sistema Le Poá_ 🤖"""
+def montar_mensagem(ind):
+    agora = datetime.now().strftime("%d/%m/%Y as %H:%M")
+    def v(k): return ind.get(k) or "-"
+    msg = (
+        f"Resumo de Vendas - {LOJA_NOME}\n"
+        f"{agora}\n\n"
+        f"Valor Vendido: R$ {v('Valor Vendido')}\n"
+        f"Qtd. Vendas: {v('Quantidade de Vendas')}\n"
+        f"Qtd. Itens: {v('Quantidade de Itens')}\n"
+        f"PA: {v('PA')}\n"
+        f"Ticket Medio: R$ {v('Ticket Medio')}\n"
+        f"Vendas Acumuladas: R$ {v('Vendas Acumuladas')}\n"
+        f"Projecao: {v('Projecao')}\n"
+        f"Meta Corrigida: {v('Meta Corrigida')}\n\n"
+        f"Enviado automaticamente pelo sistema Le Poa"
+    )
     return msg
 
 
 def enviar_whatsapp(mensagem):
-    """Envia a mensagem para o grupo via Z-API."""
     url = f"https://api.z-api.io/instances/{ZAPI_INSTANCE}/token/{ZAPI_TOKEN}/send-text"
-    headers = {
-        "Content-Type": "application/json",
-        "client-token": ZAPI_CLIENT,
-    }
-    payload = {
-        "phone": ZAPI_GROUP_ID,
-        "message": mensagem,
-    }
+    headers = {"Content-Type": "application/json", "client-token": ZAPI_CLIENT}
+    payload = {"phone": ZAPI_GROUP_ID, "message": mensagem}
     resp = requests.post(url, json=payload, headers=headers)
     if resp.status_code == 200:
-        print("✅ Mensagem enviada no WhatsApp!")
+        print("Mensagem enviada!")
     else:
-        print(f"❌ Erro ao enviar: {resp.status_code} — {resp.text}")
+        print(f"Erro: {resp.status_code} - {resp.text}")
 
 
 async def executar():
-    print(f"\n🚀 Iniciando coleta — {datetime.now().strftime('%d/%m/%Y %H:%M')}")
-    texto = await buscar_dados_datasystem()
-    indicadores = extrair_indicadores(texto)
+    print(f"Iniciando - {datetime.now().strftime('%d/%m/%Y %H:%M')}")
+    indicadores = await buscar_dados_datasystem()
     mensagem = montar_mensagem(indicadores)
-    print("\n📋 Mensagem gerada:\n", mensagem)
+    print("Mensagem:\n", mensagem)
     enviar_whatsapp(mensagem)
 
 
