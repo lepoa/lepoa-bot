@@ -16,7 +16,6 @@ ZAPI_GROUP_ID = os.environ.get("ZAPI_GROUP_ID", "")
 
 LOJA_NOME = "Le Poa Loja 01 - Matriz"
 
-# Colunas do XLS: Loja | Data | QtdeVendas | QtdeItens | PA | PU | TicketMedio | Meta | ValorVendido | VendasAcumuladas | ...
 COL_DATA       = 1
 COL_QTD_VENDAS = 2
 COL_QTD_ITENS  = 3
@@ -27,75 +26,148 @@ COL_ACUMULADO  = 9
 
 
 async def baixar_xls():
-    """Faz login no DataSystem, gera e baixa o XLS do relatório."""
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=True)
         context = await browser.new_context()
         page = await context.new_page()
 
-        print("Login...")
-        await page.goto("https://lepoa11672.useserver.com.br/RETAGUARDA/", wait_until="networkidle", timeout=30000)
-
-        try:
-            await page.wait_for_selector("input[type='text']", timeout=8000)
-            await page.fill("input[type='text']", DATASYSTEM_USER)
-            await page.fill("input[type='password']", DATASYSTEM_PASS)
-            select = await page.query_selector("select")
-            if select:
-                await page.select_option("select", label="LE POA LOJA 01 MATRIZ")
-            await page.click("text=Entrar")
-            await page.wait_for_load_state("networkidle")
-            await page.wait_for_timeout(2000)
-            print("Login OK!")
-        except Exception as e:
-            print(f"Login erro: {e}")
-
-        print("Abrindo relatorio...")
+        # Vai direto para o relatório — se redirecionar para login, faz o login
+        print("Acessando sistema...")
         await page.goto(DATASYSTEM_URL, wait_until="networkidle", timeout=30000)
         await page.wait_for_timeout(2000)
 
-        # Clica em Confirmar
-        await page.click("text=Confirmar")
-        await page.wait_for_load_state("networkidle")
-        await page.wait_for_timeout(4000)
+        # Verifica se caiu na tela de login
+        url_atual = page.url
+        print(f"URL atual: {url_atual}")
 
-        # Clica no botão de impressão (ícone de impressora)
-        print("Abrindo dialogo de exportacao...")
+        if "Login" in url_atual or "login" in url_atual or "RETAGUARDA/" == url_atual.split("useserver.com.br/")[-1]:
+            print("Tela de login detectada, fazendo login...")
+            try:
+                inputs = await page.query_selector_all("input")
+                print(f"Inputs encontrados: {len(inputs)}")
+                for inp in inputs:
+                    t = await inp.get_attribute("type")
+                    print(f"  input type={t}")
+
+                # Preenche todos os campos de texto/senha encontrados
+                all_inputs = await page.query_selector_all("input[type='text'], input:not([type])")
+                if all_inputs:
+                    await all_inputs[0].fill(DATASYSTEM_USER)
+
+                pass_inputs = await page.query_selector_all("input[type='password']")
+                if pass_inputs:
+                    await pass_inputs[0].fill(DATASYSTEM_PASS)
+
+                # Seleciona loja no dropdown
+                selects = await page.query_selector_all("select")
+                if selects:
+                    options = await selects[0].query_selector_all("option")
+                    for opt in options:
+                        val = await opt.inner_text()
+                        print(f"  opcao: {val}")
+                    # Seleciona a primeira opção que não seja vazia
+                    await selects[0].select_option(index=0)
+
+                # Clica no botão de entrar
+                btns = await page.query_selector_all("button, input[type='submit'], input[type='button']")
+                for btn in btns:
+                    txt = await btn.inner_text() if await btn.get_attribute("type") != "submit" else ""
+                    val = await btn.get_attribute("value") or ""
+                    print(f"  botao: txt={txt} val={val}")
+
+                await page.click("text=Entrar")
+                await page.wait_for_load_state("networkidle")
+                await page.wait_for_timeout(3000)
+                print(f"Pos-login URL: {page.url}")
+
+                # Vai para o relatório após login
+                await page.goto(DATASYSTEM_URL, wait_until="networkidle", timeout=30000)
+                await page.wait_for_timeout(2000)
+            except Exception as e:
+                print(f"Erro login: {e}")
+
+        # Agora deve estar na tela do relatório
+        print(f"URL relatorio: {page.url}")
+
+        # Tira screenshot para debug
+        await page.screenshot(path="/tmp/debug.png")
+        print("Screenshot salvo em /tmp/debug.png")
+
+        # Clica em Confirmar
+        print("Clicando Confirmar...")
         try:
-            await page.click("button.btn-print, .btn-imprimir, input[title*='print'], button[title*='print'], .fa-print, [onclick*='print'], [onclick*='Print']")
+            # Tenta vários seletores
+            confirmar = await page.query_selector("text=Confirmar, button:has-text('Confirmar'), input[value='Confirmar']")
+            if confirmar:
+                await confirmar.click()
+            else:
+                # Lista todos os botões presentes
+                btns = await page.query_selector_all("button, input[type='button'], input[type='submit'], a.btn")
+                for btn in btns:
+                    txt = await btn.inner_text()
+                    print(f"  btn: {txt}")
+                await page.locator("text=Confirmar").click(timeout=10000)
+
+            await page.wait_for_load_state("networkidle")
+            await page.wait_for_timeout(5000)
+            print("Relatorio gerado!")
+        except Exception as e:
+            print(f"Erro confirmar: {e}")
+            # Pega o HTML para debug
+            body = await page.inner_text("body")
+            print(f"Body (500 chars): {body[:500]}")
+
+        # Clica na impressora para exportar XLS
+        print("Exportando XLS...")
+        try:
+            # Tenta clicar no icone de impressao
+            await page.click(".fa-print, .glyphicon-print, [title*='print'], [title*='Print'], [title*='mprimir']", timeout=5000)
         except:
-            # Tenta pelo ícone de impressora na tabela
-            await page.click("img[src*='print'], .glyphicon-print, button:has-text('Imprimir')")
+            try:
+                await page.click("img[src*='print'], img[alt*='print'], img[alt*='Print']", timeout=5000)
+            except Exception as e:
+                print(f"Botao impressora: {e}")
+                # Lista imagens e botoes para debug
+                imgs = await page.query_selector_all("img, button")
+                for el in imgs[:20]:
+                    src = await el.get_attribute("src") or ""
+                    title = await el.get_attribute("title") or ""
+                    onclick = await el.get_attribute("onclick") or ""
+                    if src or title or onclick:
+                        print(f"  el: src={src} title={title} onclick={onclick[:50]}")
+
         await page.wait_for_timeout(2000)
 
         # Seleciona XLS e Detalhado
         try:
-            await page.click("input[value='.XLS'], label:has-text('XLS'), text=.XLS")
-            await page.click("input[value='Detalhado'], label:has-text('Detalhado'), text=Detalhado")
+            await page.click("label:has-text('.XLS'), input[value='.XLS']", timeout=3000)
+            await page.click("label:has-text('Detalhado'), input[value='Detalhado']", timeout=3000)
         except Exception as e:
-            print(f"Selecao opcoes: {e}")
+            print(f"Selecao: {e}")
 
-        # Faz download interceptando a resposta
-        print("Baixando XLS...")
-        async with page.expect_download() as download_info:
-            try:
-                await page.click("text=Download")
-            except:
-                await page.click("button:has-text('Download'), a:has-text('Download')")
-
-        download = await download_info.value
-        xls_path = "/tmp/relatorio.xls"
-        await download.save_as(xls_path)
-        print(f"XLS salvo em {xls_path}")
-
-        await browser.close()
-        return xls_path
+        # Download
+        print("Baixando...")
+        try:
+            async with page.expect_download(timeout=15000) as dl:
+                await page.click("text=Download", timeout=5000)
+            download = await dl.value
+            xls_path = "/tmp/relatorio.xls"
+            await download.save_as(xls_path)
+            print(f"XLS salvo!")
+            await browser.close()
+            return xls_path
+        except Exception as e:
+            print(f"Erro download: {e}")
+            await browser.close()
+            return None
 
 
 def parse_xls(xls_path):
-    """Lê o XLS (HTML disfarçado) e extrai os dados de hoje."""
+    if not xls_path:
+        return {}
+
     hoje = date.today().strftime("%d/%m/%Y")
-    print(f"Buscando dados de: {hoje}")
+    print(f"Buscando: {hoje}")
 
     indicadores = {
         "Valor Vendido": "-",
@@ -112,14 +184,11 @@ def parse_xls(xls_path):
         content = open(xls_path, 'rb').read()
         text = content.decode('utf-16-le', errors='ignore')
         trs = re.findall(r'<tr[^>]*>(.*?)</tr>', text, re.DOTALL)
-
         for tr in trs:
             tds = re.findall(r'<td[^>]*>(.*?)</td>', tr, re.DOTALL)
             if not tds:
                 continue
             cols = [re.sub(r'<[^>]+>', '', td).strip() for td in tds]
-
-            # Linha de hoje
             if len(cols) > COL_ACUMULADO and cols[COL_DATA] == hoje:
                 print(f"Linha encontrada: {cols}")
                 indicadores["Quantidade de Vendas"] = cols[COL_QTD_VENDAS]
@@ -129,7 +198,6 @@ def parse_xls(xls_path):
                 indicadores["Valor Vendido"]        = cols[COL_VALOR]
                 indicadores["Vendas Acumuladas"]    = cols[COL_ACUMULADO]
                 break
-
     except Exception as e:
         print(f"Erro parse: {e}")
 
