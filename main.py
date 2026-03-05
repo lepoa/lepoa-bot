@@ -23,26 +23,38 @@ COL_TICKET=6; COL_VALOR=8; COL_ACUMULADO=9
 
 async def baixar_xls():
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context = await browser.new_context()
+        browser = await p.chromium.launch(
+            headless=True,
+            args=["--no-sandbox", "--disable-blink-features=AutomationControlled"]
+        )
+        # Contexto com user-agent real de Chrome Windows
+        context = await browser.new_context(
+            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+            extra_http_headers={
+                "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8",
+                "Accept-Encoding": "gzip, deflate, br",
+                "Connection": "keep-alive",
+                "Upgrade-Insecure-Requests": "1",
+            }
+        )
         page = await context.new_page()
 
         print("Abrindo login...", flush=True)
-        await page.goto(DATASYSTEM_BASE + "/", timeout=30000)
+        response = await page.goto(DATASYSTEM_BASE + "/", wait_until="domcontentloaded", timeout=30000)
+        print(f"Status HTTP: {response.status}", flush=True)
+        await page.wait_for_timeout(3000)
 
-        # Espera o JS renderizar o formulário (até 15 segundos)
-        print("Aguardando formulario JS carregar...", flush=True)
+        html = await page.content()
+        print(f"HTML (400 chars): {html[:400]}", flush=True)
+
+        # Espera inputs aparecerem
         try:
             await page.wait_for_selector("input", timeout=15000)
-            print("Formulario encontrado!", flush=True)
+            print("Inputs encontrados!", flush=True)
         except:
-            # Mostra o HTML bruto para debug
-            html = await page.content()
-            print(f"HTML (300 chars): {html[:300]}", flush=True)
+            print("Nenhum input encontrado apos 15s", flush=True)
 
-        await page.wait_for_timeout(2000)
-
-        # Lista todos os inputs
         inputs = await page.query_selector_all("input")
         print(f"Total inputs: {len(inputs)}", flush=True)
         for inp in inputs:
@@ -52,74 +64,51 @@ async def baixar_xls():
             ph = await inp.get_attribute("placeholder") or ""
             print(f"  input: type={t} name={n} id={i} placeholder={ph}", flush=True)
 
-        # Preenche usuario (primeiro input não-hidden)
-        try:
-            user_input = await page.query_selector("input:not([type='hidden']):not([type='password'])")
-            if user_input:
-                await user_input.fill(DATASYSTEM_USER)
-                print("Usuario preenchido", flush=True)
-            else:
-                print("AVISO: input usuario nao encontrado!", flush=True)
-        except Exception as e:
-            print(f"Erro usuario: {e}", flush=True)
+        selects = await page.query_selector_all("select")
+        print(f"Total selects: {len(selects)}", flush=True)
 
-        # Preenche senha
+        # Preenche login
         try:
-            pass_input = await page.query_selector("input[type='password']")
-            if pass_input:
-                await pass_input.fill(DATASYSTEM_PASS)
-                print("Senha preenchida", flush=True)
-            else:
-                print("AVISO: input senha nao encontrado!", flush=True)
-        except Exception as e:
-            print(f"Erro senha: {e}", flush=True)
+            user_inp = await page.query_selector("input:not([type='password']):not([type='hidden'])")
+            if user_inp:
+                await user_inp.fill(DATASYSTEM_USER)
+                print("Usuario OK", flush=True)
 
-        # Seleciona loja
-        try:
-            select = await page.query_selector("select")
-            if select:
-                options = await select.query_selector_all("option")
-                print(f"Opcoes de loja: {len(options)}", flush=True)
+            pass_inp = await page.query_selector("input[type='password']")
+            if pass_inp:
+                await pass_inp.fill(DATASYSTEM_PASS)
+                print("Senha OK", flush=True)
+
+            if selects:
+                options = await selects[0].query_selector_all("option")
                 for opt in options:
                     txt = await opt.inner_text()
                     val = await opt.get_attribute("value") or ""
-                    print(f"  '{txt}' = '{val}'", flush=True)
+                    print(f"  opcao: '{txt}'", flush=True)
                     if "MATRIZ" in txt.upper() or "01" in txt:
-                        await select.select_option(value=val)
-                        print(f"Loja selecionada: {txt}", flush=True)
+                        await selects[0].select_option(value=val)
+                        print(f"Loja: {txt}", flush=True)
                         break
-        except Exception as e:
-            print(f"Erro loja: {e}", flush=True)
 
-        # Clica em Entrar
-        try:
             await page.click("text=Entrar", timeout=5000)
-            print("Clicou Entrar", flush=True)
-        except:
-            try:
-                await page.click("button, input[type='submit']", timeout=5000)
-                print("Clicou botao submit", flush=True)
-            except Exception as e:
-                print(f"Erro botao entrar: {e}", flush=True)
+            await page.wait_for_load_state("networkidle")
+            await page.wait_for_timeout(3000)
+            print(f"Pos-login: {page.url}", flush=True)
+        except Exception as e:
+            print(f"Erro login: {e}", flush=True)
 
-        await page.wait_for_load_state("networkidle")
+        # Relatorio
+        await page.goto(DATASYSTEM_URL, wait_until="domcontentloaded", timeout=30000)
         await page.wait_for_timeout(3000)
-        print(f"Pos-login: {page.url}", flush=True)
-
-        # Navega para o relatorio
-        print("Indo para relatorio...", flush=True)
-        await page.goto(DATASYSTEM_URL, timeout=30000)
-        await page.wait_for_timeout(3000)
-
         body = await page.inner_text("body")
-        print(f"Relatorio body: {body[:300]}", flush=True)
+        print(f"Relatorio: {body[:200]}", flush=True)
 
         if "401" in body or "Unauthorized" in body:
-            print("ERRO: Ainda sem autorizacao. Login falhou.", flush=True)
+            print("LOGIN FALHOU - verificar usuario/senha nas variaveis", flush=True)
             await browser.close()
             return None
 
-        # Clica Confirmar
+        # Confirmar
         try:
             await page.locator("text=Confirmar").click(timeout=15000)
             await page.wait_for_load_state("networkidle")
@@ -130,30 +119,28 @@ async def baixar_xls():
             await browser.close()
             return None
 
-        # Acha botao de impressao
-        print("Procurando botao impressora...", flush=True)
+        # Botao impressora
+        print("Procurando impressora...", flush=True)
         els = await page.query_selector_all("[onclick]")
         for el in els:
             onclick = await el.get_attribute("onclick") or ""
-            tag = await el.evaluate("el => el.tagName")
-            print(f"  [{tag}] onclick={onclick[:80]}", flush=True)
+            if any(x in onclick.lower() for x in ["print","imprim","xls","export","relat"]):
+                print(f"  candidato: {onclick[:80]}", flush=True)
 
         try:
             await page.locator("[onclick*='print'], [onclick*='Print'], [onclick*='imprimir']").first.click(timeout=5000)
             await page.wait_for_timeout(2000)
-            print("Impressora clicada!", flush=True)
+            print("Impressora OK!", flush=True)
         except Exception as e:
-            print(f"Impressora: {e}", flush=True)
+            print(f"Impressora erro: {e}", flush=True)
 
-        # XLS + Detalhado
+        # XLS + Detalhado + Download
         try:
             await page.locator("text=.XLS").click(timeout=3000)
             await page.locator("text=Detalhado").click(timeout=3000)
-            print("XLS+Detalhado OK", flush=True)
         except Exception as e:
             print(f"Selecao: {e}", flush=True)
 
-        # Download
         try:
             async with page.expect_download(timeout=20000) as dl:
                 await page.locator("text=Download").click(timeout=5000)
